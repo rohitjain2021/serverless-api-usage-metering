@@ -1,6 +1,29 @@
 # Serverless API Usage Metering
 
-A serverless system for automated API usage metering, historical reporting, and billing analysis.
+An AWS-native API usage accounting framework for transparent, traceable, and reliable usage-based billing.
+
+## Problem
+
+Amazon API Gateway provides native API usage metering, but the data is aggregated and primarily designed for quota monitoring rather than detailed billing accountability. This makes it difficult to maintain long-term usage history, apply custom billing rules, explain how billable usage was calculated, and verify usage against request-level activity.
+
+## What We Are Solving
+
+We are building an AWS-native API usage accounting framework that derives billable usage from request-level API activity, applies configurable billing policies, stores durable historical usage records, and reconciles calculated usage with API Gateway's native usage measurements.
+
+## Why We Are Solving It
+
+Usage-based API services need more than a total request count. Engineering, finance, and customers need to understand which requests were considered billable, how usage was calculated, and whether the reported numbers can be independently verified. The goal is to make API usage accounting more transparent, traceable, and reliable.
+
+## Benefits
+
+The framework provides more accurate and explainable usage reporting, long-term historical records, configurable billing logic, independent usage verification, easier discrepancy investigation, and a stronger audit trail for usage-based billing.
+
+## Implementation Status
+
+The current implementation exports API Gateway's aggregated usage measurements to
+monthly CSV and JSON reports in S3. Request-level activity ingestion, configurable
+billing policies, and reconciliation are planned capabilities and are not yet
+implemented. The architecture below describes the current reporting component.
 
 ## Architecture
 
@@ -45,6 +68,34 @@ separate operations, so a failure on the second upload can leave only the CSV.
 Rerunning writes both files to the same keys. With bucket versioning enabled,
 reruns retain previous object versions and incur additional storage.
 
+## Dependencies and software versions
+
+Record dependency changes in these files before installing them:
+
+| File | Purpose |
+| --- | --- |
+| `requirements.txt` | Exact local AWS SDK versions, including transitive dependencies |
+| `requirements-dev.txt` | Shared requirements plus the pinned CloudFormation validator |
+| `package.json` / `package-lock.json` | Serverless npm launcher and locked dependency tree |
+| `serverless.yml` | Framework engine 4.46.0 and Lambda runtime Python 3.13 |
+| `.python-version` | Python 3.13 for local version managers |
+| `.nvmrc` | Node.js 22.23.4 for local version managers |
+
+Python and Node.js must be installed separately; requirements files install Python
+packages, not the interpreters. The version files document the project versions
+and can be used by compatible version managers. Git and AWS credentials are needed
+for repository operations and deployment. AWS CLI is optional for this project's
+Serverless deployment commands.
+
+Install Python packages with `python -m pip install -r requirements-dev.txt` and
+JavaScript packages with `npm ci`. For dependency updates, edit the manifest first,
+resolve compatible transitive versions, and commit the updated manifests/lockfile
+together. Use `npm install` when intentionally updating `package-lock.json`.
+
+The current Lambda ZIP contains only application code and uses AWS's managed SDK.
+The Python version pins apply to the local environment; packaging the SDK with the
+Lambda would be needed to enforce those same SDK versions in AWS.
+
 ## Test locally
 
 Python 3.13 is the deployment runtime. Install Boto3 locally for the module's AWS
@@ -59,15 +110,16 @@ python -m unittest discover -s tests -v
 
 ## Build and deploy
 
-Use Node.js 20 or newer and Serverless Framework v4. Configure AWS credentials
+Use Node.js 22.23.4 and the Serverless versions declared in the project files. Configure AWS credentials
 for the target account. The managed Python Lambda runtime supplies Boto3, so the
 function has no additional Python dependencies to package.
 
 ```powershell
-npm install
+npm ci
 npx serverless login
 npm run print
 npm run package
+cfn-lint .serverless/cloudformation-template-update-stack.json
 npm run deploy -- --stage dev --region us-east-1
 ```
 

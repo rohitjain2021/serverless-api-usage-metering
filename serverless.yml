@@ -3,7 +3,8 @@
 # Outputs: a Lambda, monthly Scheduler, private reports bucket, IAM/log resources,
 # and stack outputs containing the deployed function and bucket names.
 service: serverless-api-usage-metering
-frameworkVersion: '4'
+# Pin the Framework engine as well as the npm launcher dependency.
+frameworkVersion: '4.46.0'
 configValidationMode: error
 
 provider:
