@@ -1,0 +1,115 @@
+# Serverless Framework deployment definition.
+# Inputs: CLI --stage/--region, AWS credentials, and optional --param usagePlanIds.
+# Outputs: a Lambda, monthly Scheduler, private reports bucket, IAM/log resources,
+# and stack outputs containing the deployed function and bucket names.
+service: serverless-api-usage-metering
+frameworkVersion: '4'
+configValidationMode: error
+
+provider:
+  # Defaults for the Lambda and deployment. Each stage has its own AWS stack.
+  name: aws
+  runtime: python3.13
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  # Maximum execution time in seconds.
+  timeout: 900
+  # Memory allocated to the Lambda in MB.
+  memorySize: 512
+  # Retain operational logs for 30 days.
+  logRetentionInDays: 30
+  environment:
+    # CloudFormation resolves Ref to the bucket name after creating the bucket.
+    REPORT_BUCKET:
+      Ref: ReportsBucket
+    REPORT_PREFIX: reports
+    # Empty means all plans in this region.
+    USAGE_PLAN_IDS: ${param:usagePlanIds, ''}
+  iam:
+    role:
+      statements:
+        # Read plan definitions, key metadata, and usage; no API modification access.
+        - Effect: Allow
+          Action: apigateway:GET
+          Resource:
+            - Fn::Sub: 'arn:${AWS::Partition}:apigateway:${AWS::Region}::/usageplans'
+            - Fn::Sub: 'arn:${AWS::Partition}:apigateway:${AWS::Region}::/usageplans/*/usage'
+            - Fn::Sub: 'arn:${AWS::Partition}:apigateway:${AWS::Region}::/apikeys'
+        # Limit report writes to the reports/ prefix in this stack's bucket.
+        - Effect: Allow
+          Action: s3:PutObject
+          Resource:
+            Fn::Sub: '${ReportsBucket.Arn}/reports/*'
+
+package:
+  # Exclude everything first, then include only the function source in its ZIP.
+  # Boto3 is supplied by Lambda; tests and local environments are not packaged.
+  patterns:
+    - '!**'
+    - src/app.py
+
+functions:
+  report:
+    # Module path inside the ZIP, followed by the Python entry-point function.
+    handler: src/app.lambda_handler
+    description: Generate monthly API Gateway usage reports in S3
+    events:
+      - schedule:
+          # Use EventBridge Scheduler at 06:00 UTC on day 1 of every month.
+          method: scheduler
+          rate: cron(0 6 1 * ? *)
+          timezone: UTC
+          input:
+            # Scheduler replaces this placeholder with the original scheduled time.
+            # The handler uses it to report the intended month even after a delay.
+            time: '<aws.scheduler.scheduled-time>'
+
+resources:
+  # Additional CloudFormation resources deployed alongside the function.
+  Resources:
+    ReportsBucket:
+      Type: AWS::S3::Bucket
+      # Preserve historical reports when deleting the stack or replacing the bucket.
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        # Encrypt stored objects with S3-managed AES-256 keys.
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: AES256
+        # Prevent public bucket/object access through ACLs or public policies.
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        # Keep previous versions when reruns overwrite a monthly object key.
+        VersioningConfiguration:
+          Status: Enabled
+    ReportsBucketPolicy:
+      # Reject HTTP requests; uploads and downloads must use HTTPS.
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket:
+          Ref: ReportsBucket
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Deny
+              Principal: '*'
+              Action: s3:*
+              Resource:
+                - Fn::GetAtt: [ReportsBucket, Arn]
+                - Fn::Sub: '${ReportsBucket.Arn}/*'
+              Condition:
+                Bool:
+                  aws:SecureTransport: 'false'
+  Outputs:
+    # Display these values with `serverless info --verbose` after deployment.
+    ReportFunctionName:
+      Value:
+        Ref: ReportLambdaFunction
+    ReportsBucketName:
+      Value:
+        Ref: ReportsBucket

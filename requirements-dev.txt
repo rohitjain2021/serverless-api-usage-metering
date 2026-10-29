@@ -1,0 +1,2 @@
+# Supplied by the managed Lambda runtime; install locally for imports and tests.
+boto3>=1.35,<2

@@ -1,0 +1,18 @@
+{
+  "name": "serverless-api-usage-metering",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Monthly API Gateway usage reports deployed with Serverless Framework",
+  "scripts": {
+    "print": "serverless print",
+    "package": "serverless package",
+    "deploy": "serverless deploy",
+    "test": "python -m unittest discover -s tests -v"
+  },
+  "devDependencies": {
+    "serverless": "4.45.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
