@@ -150,6 +150,45 @@ npx serverless info --stage dev --region us-east-1 --verbose
 Check the invocation result and the bucket for both reports. The stack outputs
 shown by `serverless info --verbose` include the bucket name.
 
+## Continuous integration
+
+The pipeline is defined as code in `.github/workflows/ci.yml`. It runs on branch
+pushes, pull requests targeting `main`, and manual runs from GitHub Actions.
+Python and Node versions come from `.python-version` and `.nvmrc`; dependencies
+come from the requirements files and npm lockfile. Action dependencies are pinned
+to verified commits directly in the workflow.
+
+Every run installs the dependencies, checks Python package compatibility, runs
+the Lambda unit tests, and parses the source YAML. These checks need no AWS or
+Serverless credentials. The run summary explicitly states when packaging is skipped.
+
+Authenticated packaging is a separate job, initially disabled. To enable it:
+
+1. Create a Serverless CI access key through your Serverless account and add it as
+   the repository Actions secret `SERVERLESS_ACCESS_KEY`. An existing license key
+   can instead be stored as `SERVERLESS_LICENSE_KEY`. Do not commit either key.
+2. If packaging requires access to AWS state or deployment buckets, provision a
+   narrowly scoped packaging role and its GitHub OIDC trust through IaC. Set the
+   repository Actions variable `AWS_CI_ROLE_ARN` to its ARN. Restrict the trust to
+   this repository's `main` branch and grant only the access packaging needs.
+   The workflow references this role; it does not provision it.
+3. Set the repository Actions variable `ENABLE_SERVERLESS_PACKAGE` to `true`.
+4. Push to `main` or manually run the workflow against `main`.
+
+The packaging job uses `serverless.yml` to build the `ci` stage for `us-east-1`,
+validates the generated CloudFormation with `cfn-lint`, and retains the ZIP and
+template as Actions artifacts for seven days. It runs only on `main` outside pull
+request events; pull requests and other branches receive no packaging credentials.
+If packaging is enabled without a Serverless key, the job fails with a setup error.
+
+This pipeline does not run `serverless deploy`, create AWS infrastructure, or
+grant itself deployment permissions. Provision AWS roles through reviewed IaC
+before enabling cloud access. Automated deployment will be added after a manual
+AWS deployment and end-to-end verification.
+
+References: [Serverless CI authentication](https://www.serverless.com/framework/docs/guides/upgrading-v4#authentication-requirement)
+and [packaging requirements](https://www.serverless.com/framework/docs/providers/aws/guide/packaging).
+
 ## Code documentation
 
 Python functions include docstrings describing their purpose, inputs, outputs,

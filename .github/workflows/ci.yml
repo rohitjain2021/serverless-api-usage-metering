@@ -1,0 +1,176 @@
+# Validate application changes using the same manifests and Serverless IaC as local builds.
+# Inputs: repository code, version files, and pinned dependency manifests.
+# Outputs: test/check results; optional Serverless ZIP and CloudFormation artifacts.
+# This workflow contains no deployment commands and creates no AWS resources.
+name: CI
+
+# Run for branch updates, proposed changes to main, and manual checks.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Checking code requires read access only; the packaging job opts into OIDC separately.
+permissions:
+  contents: read
+
+# Stop an older run when a newer commit arrives on the same branch or pull request.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Tests and configuration checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # Pin third-party actions to commits; do not retain Git credentials in the checkout.
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      # Match Lambda's Python version and cache dependencies using both requirements files.
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      # Install the Node version recorded for this project and cache npm downloads.
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # All Python packages, including validation tooling, come from committed pins.
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      # Fail if the pinned package set contains incompatible dependencies.
+      - name: Check Python dependency compatibility
+        run: python -m pip check
+
+      # npm ci uses the committed dependency tree without rewriting package-lock.json.
+      - name: Install Serverless Framework
+        run: npm ci --no-audit --no-fund
+
+      # AWS clients are mocked, so these tests need no cloud credentials.
+      - name: Run Lambda unit tests
+        run: python -m unittest discover -s tests -v
+
+      # Syntax checks run even when authenticated Serverless packaging is not configured.
+      - name: Validate YAML syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          # Parse each source file and fail immediately on malformed YAML.
+          for filename in ('serverless.yml', '.github/workflows/ci.yml'):
+              yaml.safe_load(Path(filename).read_text(encoding='utf-8'))
+              print(f'Valid YAML: {filename}')
+          PY
+
+      # Make disabled packaging visible instead of implying the generated template was checked.
+      - name: Summarize check coverage
+        env:
+          PACKAGE_ENABLED: ${{ vars.ENABLE_SERVERLESS_PACKAGE }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref }}
+        run: |
+          echo 'Unit tests, dependency compatibility, npm installation, and source YAML checks completed.' >> "$GITHUB_STEP_SUMMARY"
+          if [ "$PACKAGE_ENABLED" != 'true' ]; then
+            echo 'Serverless packaging and generated CloudFormation validation are disabled until CI authentication is configured. See README.md.' >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$EVENT_NAME" = 'pull_request' ] || [ "$REF_NAME" != 'refs/heads/main' ]; then
+            echo 'Authenticated packaging runs only for main; this run does not receive packaging credentials.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  package:
+    name: Serverless package and CloudFormation validation
+    needs: validate
+    # Only trusted main-branch code can receive the Serverless secret or assume a CI role.
+    # Set the repository variable to true after configuring the credentials below.
+    if: >-
+      vars.ENABLE_SERVERLESS_PACKAGE == 'true' &&
+      github.ref == 'refs/heads/main' &&
+      github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Used only if an AWS_CI_ROLE_ARN is supplied; no long-lived AWS keys are stored.
+      id-token: write
+    env:
+      CI: 'true'
+      SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
+      SERVERLESS_LICENSE_KEY: ${{ secrets.SERVERLESS_LICENSE_KEY }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      # Fail promptly instead of opening an interactive login prompt on the runner.
+      - name: Check Serverless authentication configuration
+        run: |
+          if [ -z "$SERVERLESS_ACCESS_KEY" ] && [ -z "$SERVERLESS_LICENSE_KEY" ]; then
+            echo '::error::Configure SERVERLESS_ACCESS_KEY or SERVERLESS_LICENSE_KEY in repository Actions secrets.'
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install pinned dependencies
+        run: |
+          python -m pip install -r requirements-dev.txt
+          npm ci --no-audit --no-fund
+
+      # Optional read access for packaging configurations that query AWS state/buckets.
+      # The role must already exist; provision its trust and policy using IaC separately.
+      - name: Assume packaging role through OIDC
+        if: vars.AWS_CI_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          aws-region: us-east-1
+
+      # Generate deployment artifacts from serverless.yml without invoking deployment.
+      - name: Package with Serverless Framework
+        run: npm run package -- --stage ci --region us-east-1
+
+      # Validate the generated AWS template, rather than linting Serverless YAML as CFN.
+      - name: Validate generated CloudFormation
+        run: cfn-lint .serverless/cloudformation-template-update-stack.json
+
+      # Publish only the code ZIP and CFN template, excluding Serverless state/auth files.
+      - name: Upload validated package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: serverless-package-${{ github.sha }}
+          path: |
+            .serverless/*.zip
+            .serverless/cloudformation-template-update-stack.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
