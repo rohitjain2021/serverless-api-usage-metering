@@ -1,7 +1,8 @@
-"""Collect monthly API Gateway REST API usage and publish CSV/JSON reports to S3.
+"""Collect API Gateway REST API usage and publish monthly or date-range reports to S3.
 
 Input: a Lambda event containing an optional historical ``month`` or scheduled
-``time``, plus deployment settings supplied through environment variables.
+``time``, or explicit ``start_date``/``end_date`` for a manual check, plus settings
+supplied through environment variables.
 Output: two encrypted S3 objects and a dictionary summarizing the completed run.
 The collection/formatting helpers can also be called separately in local tests.
 """
@@ -44,11 +45,16 @@ S3_ENCRYPTION = "AES256"
 MONTH_FORMAT = "%Y-%m"
 # Date parsing also checks calendar validity.
 MONTH_PATTERN = re.compile(r"\d{4}-\d{2}")
+# Require unambiguous ISO dates for manual reports and bound each query to 31 days.
+DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
+MAX_REPORT_RANGE_DAYS = 31
 # Escape these in user-supplied names.
 CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
 # Ordered CSV columns; detailed daily records appear only in the JSON report.
 FIELDS = ("month", "customer_id", "customer_name", "customer_mapping_status",
           "usage_plan_id", "usage_plan_name", "api_key_id", "api_key_name", "requests_used")
+# Manual reports carry their exact dates in CSV instead of relying on a month label.
+DATE_RANGE_FIELDS = ("start_date", "end_date", *FIELDS)
 # Apply the same retry and timeout settings to both AWS clients.
 AWS_CONFIG = Config(
     retries={"mode": "standard", "total_max_attempts": 8},
@@ -58,24 +64,40 @@ AWS_CONFIG = Config(
 
 
 def report_period(event, now=None):
-    """Resolve the inclusive start and end dates of a completed report month.
+    """Resolve dates for a completed month or an explicit manual date range.
 
     Args:
         event (dict): Optional ``month`` as YYYY-MM, or ``time`` as an ISO 8601
             timestamp with a timezone. An explicit month takes precedence.
+            Alternatively, supply both start_date and end_date as YYYY-MM-DD.
+            Manual ranges may include today, cannot extend into the future, and
+            are limited to MAX_REPORT_RANGE_DAYS. Do not combine range and month/time.
         now (datetime | None): Reference time, normally UTC; defaults to current
             UTC time. Tests can supply a fixed time. A scheduled time overrides
             this reference when no explicit month is supplied.
 
     Returns:
-        tuple[date, date]: First and last day of the selected month. Without an
-        explicit month, selects the month before the reference time.
+        tuple[date, date]: Inclusive query bounds. Without explicit dates/month,
+        selects the month before the reference time.
 
     Raises:
         ValueError: The date is invalid, the scheduled time lacks a timezone,
             or the month has not finished relative to the reference time.
     """
     now = now or datetime.now(timezone.utc)
+    # Explicit ranges support live demo checks without changing scheduled monthly behavior.
+    if "start_date" in event or "end_date" in event:
+        if "month" in event or "time" in event:
+            raise ValueError("Use either month/time or start_date/end_date, not both")
+        values = [event.get("start_date"), event.get("end_date")]
+        if any(not isinstance(value, str) or not DATE_PATTERN.fullmatch(value) for value in values):
+            raise ValueError("Both start_date and end_date are required as YYYY-MM-DD")
+        start, end = (date.fromisoformat(value) for value in values)
+        if start > end or end > now.astimezone(timezone.utc).date():
+            raise ValueError("Date range must be ordered and cannot include future dates")
+        if (end - start).days + 1 > MAX_REPORT_RANGE_DAYS:
+            raise ValueError(f"Manual date ranges cannot exceed {MAX_REPORT_RANGE_DAYS} days")
+        return start, end
     if "month" in event:
         month = event["month"]
         if not isinstance(month, str) or not MONTH_PATTERN.fullmatch(month):
@@ -232,11 +254,13 @@ def create_clients():
 
 
 def lambda_handler(event, context):
-    """Collect one month's usage, upload both reports, and summarize the result.
+    """Collect a month's or explicit date range's usage and upload both reports.
 
     Args:
         event (dict | None): {} or None selects the previous month; ``month``
             selects YYYY-MM; ``time`` supplies the original scheduled timestamp.
+            A start_date/end_date pair selects a manual range of at most 31 days.
+            Reports including today are provisional while API Gateway measurements arrive.
         context: AWS Lambda invocation metadata; accepted but currently unused.
 
     Environment:
@@ -277,7 +301,17 @@ def lambda_handler(event, context):
     report["region"] = api.meta.region_name
     # Deterministic paths allow backfills/retries to replace the same month's reports.
     base = f"{prefix}/{report['month']}/usage"
-    objects = [(base + ".csv", csv_report(report), "text/csv; charset=utf-8"),
+    csv_fields = FIELDS
+    if "start_date" in event:
+        # Keep live checks separate from completed monthly reports so neither overwrites the other.
+        report["report_type"] = "date_range"
+        report["is_provisional"] = end == datetime.now(timezone.utc).date()
+        report["month"] = start.strftime(MONTH_FORMAT) if start.strftime(MONTH_FORMAT) == end.strftime(MONTH_FORMAT) else None
+        for row in report["usage"]:
+            row.update(start_date=start.isoformat(), end_date=end.isoformat(), month=report["month"] or "")
+        base = f"{prefix}/date-ranges/{start.isoformat()}_{end.isoformat()}/usage"
+        csv_fields = DATE_RANGE_FIELDS
+    objects = [(base + ".csv", csv_report(report, fields=csv_fields), "text/csv; charset=utf-8"),
                (base + ".json", json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"), "application/json")]
     # Upload UTF-8 payloads with the correct MIME type and explicit S3 encryption.
     for key, body, content_type in objects:
@@ -287,5 +321,8 @@ def lambda_handler(event, context):
     result = {"month": report["month"], "bucket": bucket,
               "keys": [item[0] for item in objects],
               "total_requests": report["total_requests"], "api_key_plan_count": report["api_key_plan_count"]}
+    if "start_date" in event:
+        result.update(start_date=start.isoformat(), end_date=end.isoformat(),
+                      is_provisional=report["is_provisional"])
     LOGGER.info("Usage report complete: %s", json.dumps(result))
     return result

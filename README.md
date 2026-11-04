@@ -70,7 +70,11 @@ An empty event (`{}`) selects the previous month. To rerun a completed month:
 ```
 
 The schedule passes its original scheduled timestamp in `time`, so delayed
-invocations use the intended month. Current and future months are rejected.
+invocations use the intended month. Current and future months are rejected for
+month-based events. Manual `start_date`/`end_date` events may include today, with a
+maximum of 31 inclusive days and no future dates. Their results are stored separately
+under `reports/date-ranges/YYYY-MM-DD_YYYY-MM-DD/` so monthly reports are preserved.
+Reports including today are marked `is_provisional: true` because usage can arrive late.
 Failures propagate to Lambda rather than returning a success status. SDK calls
 retry transient errors. Collection completes before uploads begin; uploads are
 separate operations, so a failure on the second upload can leave only the CSV.
@@ -216,9 +220,54 @@ aws apigateway get-usage --usage-plan-id $demoPlanId --start-date $demoDate --en
 ```
 
 Traffic is recorded on its actual UTC date, not backdated into the October sample.
-The reporting Lambda still accepts only completed months. Use `get-usage` directly
-for the first same-day check; the monthly report will include this traffic after
-the month closes. Connecting Streamlit to the live reports is a separate integration.
+The monthly schedule includes this traffic after the month closes. For an immediate
+Lambda check, use the manual date-range workflow below. Connecting Streamlit to the
+live reports is a separate integration.
+
+### Send a counted demo batch and fetch it through Lambda
+
+API Gateway records usage from actual API calls; the fixture is not uploaded as
+historical usage. `scripts/generate_demo_traffic.py` makes a deliberately small
+batch against the deployed endpoint using the real customer keys:
+
+| Customer | Accepted requests requested per batch |
+| --- | ---: |
+| Acme Ltd | 5 |
+| Northwind Ltd | 10 |
+| Contoso Ltd | 15 |
+| **Total** | **30** |
+
+```powershell
+# Send one batch of real requests. Each rerun adds another batch to AWS usage.
+.\.venv\Scripts\python.exe scripts/generate_demo_traffic.py
+
+# Fetch today's usage through the deployed Lambda, without sending new API requests.
+.\.venv\Scripts\python.exe scripts/generate_demo_traffic.py --report-only
+```
+
+The traffic command saves a timestamped receipt with customer/key IDs, observed
+counts before the run, accepted-request counts, and request IDs in `output/live-demo/`.
+It never prints or saves API key values. The receipt is updated after each successful
+request so partial failures remain inspectable. Traffic is paced, not automatically
+retried, and goes only to the stack's verified AWS demo endpoint.
+
+The report-only command invokes the real Lambda with an event such as:
+
+```json
+{"start_date": "2026-11-04", "end_date": "2026-11-04"}
+```
+
+Lambda fetches native usage and customer tags, calculates totals, and writes encrypted
+CSV/JSON to S3. The script downloads those exact files under
+`output/live-demo/reports/date-ranges/<start>_<end>/`. Both exports include their date
+range, and JSON retains daily details. Outputs and receipts are excluded from Git.
+Local downloaded files are plain text; encryption applies to the S3 objects.
+
+AWS measurements may lag accepted traffic. If totals are still catching up, rerun
+**only `--report-only`**, which updates the same report keys without adding traffic.
+Totals include earlier calls that day, so they may exceed 5/10/15. The sample-only
+Streamlit dashboard does not read these live files automatically. No prices or
+customer charges are calculated by this check.
 
 API deployments are snapshots. When changing routes or integration settings, bump
 the `DemoApiDeploymentV1` logical ID and its stage reference so CloudFormation creates

@@ -5,3 +5,4 @@ __pycache__/
 node_modules/
 response.json
 output/sample-reports/
+output/live-demo/

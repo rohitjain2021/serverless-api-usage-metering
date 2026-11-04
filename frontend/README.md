@@ -43,8 +43,9 @@ rejects reversed ranges. It displays API request counts, not counts of distinct
 API endpoints. It does not apply prices or billing rules.
 
 This UI makes no AWS calls and provides no authentication or live S3/RAG integration.
-Date-range filtering happens in the frontend service; the production Lambda still
-accepts completed months. Live access and customer authorization must be designed
+Date-range filtering for this sample UI happens in the frontend service. The Lambda
+also supports explicit manual date ranges for separate live checks, while its
+schedule remains monthly. Live UI access and customer authorization must be designed
 before a shared deployment; a dropdown alone does not restrict data access.
 The current Serverless package excludes the frontend, and no deployment is performed.
 

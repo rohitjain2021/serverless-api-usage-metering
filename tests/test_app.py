@@ -31,6 +31,25 @@ class PeriodTests(unittest.TestCase):
         """Input: February 1 scheduled timestamp. Expect January despite execution delay."""
         self.assertEqual(app.report_period({"time": "2026-02-01T06:00:00Z"})[0], date(2026, 1, 1))
 
+    def test_manual_range_can_include_today(self):
+        """Input: a same-day manual request. Expect that UTC day without relaxing month rules."""
+        now = datetime(2026, 11, 4, 12, tzinfo=timezone.utc)
+        self.assertEqual(app.report_period({"start_date": "2026-11-04", "end_date": "2026-11-04"}, now),
+                         (date(2026, 11, 4), date(2026, 11, 4)))
+
+    def test_invalid_manual_ranges_fail(self):
+        """Inputs: missing, future, reversed, overlong, and conflicting dates. Expect ValueError."""
+        events = [
+            {"start_date": "2026-11-01"},
+            {"start_date": "2026-11-01", "end_date": "2026-11-05"},
+            {"start_date": "2026-11-04", "end_date": "2026-11-01"},
+            {"start_date": "2026-09-01", "end_date": "2026-11-01"},
+            {"month": "2026-10", "start_date": "2026-10-01", "end_date": "2026-10-02"},
+        ]
+        for event in events:
+            with self.subTest(event=event), self.assertRaises(ValueError):
+                app.report_period(event, datetime(2026, 11, 4, tzinfo=timezone.utc))
+
     def test_invalid_and_incomplete_months_fail(self):
         """Inputs: malformed/future/current months and naive time. Expect ValueError."""
         for month in ("2026-1", "2026-13", "nope", 202601, "9999-12"):
@@ -165,6 +184,23 @@ class ReportTests(unittest.TestCase):
         with patch.dict(os.environ, {"REPORT_BUCKET": "reports-bucket"}), patch.object(
                 app, "create_clients", return_value=(self.api, s3)), self.assertRaises(RuntimeError):
             app.lambda_handler({"month": "2026-09"}, None)
+
+    def test_manual_report_uses_separate_paths_and_exact_csv_dates(self):
+        """Input: two-day usage. Expect total 10, explicit CSV dates, and no monthly overwrite."""
+        s3 = Mock()
+        with patch.dict(os.environ, {"REPORT_BUCKET": "reports-bucket", "REPORT_PREFIX": "reports",
+                                     "USAGE_PLAN_IDS": "p1"}), patch.object(
+                app, "create_clients", return_value=(self.api, s3)):
+            result = app.lambda_handler({"start_date": "2026-09-01", "end_date": "2026-09-02"}, None)
+        self.assertEqual(result["total_requests"], 10)
+        self.assertEqual(result["keys"][0], "reports/date-ranges/2026-09-01_2026-09-02/usage.csv")
+        self.api.get_usage.assert_called_once_with(limit=500, usagePlanId="p1", startDate="2026-09-01", endDate="2026-09-02")
+        row = next(csv.DictReader(io.StringIO(s3.put_object.call_args_list[0].kwargs["Body"].decode())))
+        self.assertEqual(row["start_date"], "2026-09-01")
+        self.assertEqual(row["end_date"], "2026-09-02")
+        report = json.loads(s3.put_object.call_args_list[1].kwargs["Body"])
+        self.assertEqual(report["report_type"], "date_range")
+        self.assertFalse(report["is_provisional"])
 
 
 if __name__ == "__main__":
