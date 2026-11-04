@@ -7,6 +7,12 @@ service: serverless-api-usage-metering
 frameworkVersion: '4.46.0'
 configValidationMode: error
 
+custom:
+  # Report only this stack's demo plan by default, instead of unrelated regional usage plans.
+  # A --param usagePlanIds value still overrides the default for existing API integrations.
+  defaultUsagePlanId:
+    Ref: DemoUsagePlan
+
 provider:
   # Defaults for the Lambda and deployment. Each stage has its own AWS stack.
   name: aws
@@ -25,8 +31,8 @@ provider:
     REPORT_BUCKET:
       Ref: ReportsBucket
     REPORT_PREFIX: reports
-    # Empty means all plans in this region.
-    USAGE_PLAN_IDS: ${param:usagePlanIds, ''}
+    # Resolve the real plan ID at deployment; explicit empty override selects all regional plans.
+    USAGE_PLAN_IDS: ${param:usagePlanIds, self:custom.defaultUsagePlanId}
   iam:
     role:
       statements:
@@ -67,51 +73,52 @@ functions:
             time: '<aws.scheduler.scheduled-time>'
 
 resources:
-  # Additional CloudFormation resources deployed alongside the function.
-  Resources:
-    ReportsBucket:
-      Type: AWS::S3::Bucket
-      # Preserve historical reports when deleting the stack or replacing the bucket.
-      DeletionPolicy: Retain
-      UpdateReplacePolicy: Retain
-      Properties:
-        # Encrypt stored objects with S3-managed AES-256 keys.
-        BucketEncryption:
-          ServerSideEncryptionConfiguration:
-            - ServerSideEncryptionByDefault:
-                SSEAlgorithm: AES256
-        # Prevent public bucket/object access through ACLs or public policies.
-        PublicAccessBlockConfiguration:
-          BlockPublicAcls: true
-          BlockPublicPolicy: true
-          IgnorePublicAcls: true
-          RestrictPublicBuckets: true
-        # Keep previous versions when reruns overwrite a monthly object key.
-        VersioningConfiguration:
-          Status: Enabled
-    ReportsBucketPolicy:
-      # Reject HTTP requests; uploads and downloads must use HTTPS.
-      Type: AWS::S3::BucketPolicy
-      Properties:
-        Bucket:
+  - ${file(infrastructure/demo-api.yml)}
+    # Additional CloudFormation resources deployed alongside the function.
+  - Resources:
+      ReportsBucket:
+        Type: AWS::S3::Bucket
+        # Preserve historical reports when deleting the stack or replacing the bucket.
+        DeletionPolicy: Retain
+        UpdateReplacePolicy: Retain
+        Properties:
+          # Encrypt stored objects with S3-managed AES-256 keys.
+          BucketEncryption:
+            ServerSideEncryptionConfiguration:
+              - ServerSideEncryptionByDefault:
+                  SSEAlgorithm: AES256
+          # Prevent public bucket/object access through ACLs or public policies.
+          PublicAccessBlockConfiguration:
+            BlockPublicAcls: true
+            BlockPublicPolicy: true
+            IgnorePublicAcls: true
+            RestrictPublicBuckets: true
+          # Keep previous versions when reruns overwrite a monthly object key.
+          VersioningConfiguration:
+            Status: Enabled
+      ReportsBucketPolicy:
+        # Reject HTTP requests; uploads and downloads must use HTTPS.
+        Type: AWS::S3::BucketPolicy
+        Properties:
+          Bucket:
+            Ref: ReportsBucket
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Deny
+                Principal: '*'
+                Action: s3:*
+                Resource:
+                  - Fn::GetAtt: [ReportsBucket, Arn]
+                  - Fn::Sub: '${ReportsBucket.Arn}/*'
+                Condition:
+                  Bool:
+                    aws:SecureTransport: 'false'
+    Outputs:
+      # Display these values with `serverless info --verbose` after deployment.
+      ReportFunctionName:
+        Value:
+          Ref: ReportLambdaFunction
+      ReportsBucketName:
+        Value:
           Ref: ReportsBucket
-        PolicyDocument:
-          Version: '2012-10-17'
-          Statement:
-            - Effect: Deny
-              Principal: '*'
-              Action: s3:*
-              Resource:
-                - Fn::GetAtt: [ReportsBucket, Arn]
-                - Fn::Sub: '${ReportsBucket.Arn}/*'
-              Condition:
-                Bool:
-                  aws:SecureTransport: 'false'
-  Outputs:
-    # Display these values with `serverless info --verbose` after deployment.
-    ReportFunctionName:
-      Value:
-        Ref: ReportLambdaFunction
-    ReportsBucketName:
-      Value:
-        Ref: ReportsBucket
