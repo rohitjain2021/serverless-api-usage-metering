@@ -43,7 +43,10 @@ s3://<bucket>/reports/YYYY-MM/usage.csv
 s3://<bucket>/reports/YYYY-MM/usage.json
 ```
 
-CSV contains month, plan ID/name, API key ID/name, and total requests used. JSON
+CSV contains month, customer ID/name and mapping status, plan ID/name, API key ID/name,
+and total requests used. Customer identity comes from the API key tags `customer_id`
+and `customer_name`; missing customer IDs are marked `unmapped` rather than inferred.
+Report schema version 2 adds these fields. JSON
 also contains the daily used/remaining quota pairs, regional metadata, and totals.
 Key values are never requested; reports contain key IDs and names only. Names
 that could execute spreadsheet formulas are escaped in CSV.
@@ -68,6 +71,85 @@ separate operations, so a failure on the second upload can leave only the CSV.
 Rerunning writes both files to the same keys. With bucket versioning enabled,
 reruns retain previous object versions and incur additional storage.
 
+## Run one sample locally
+
+`samples/api-gateway-usage.json` is the single sample input. Its outer `month` and
+`region` fields configure the run. The response sections explicitly identify the
+Boto3 operations being simulated:
+
+| Sample section | Real Boto3 call | Purpose |
+| --- | --- | --- |
+| `get_usage_plans_response` | `get_usage_plans()` | Plan IDs, readable plan names, and quota settings |
+| `get_api_keys_response` | `get_api_keys(includeValues=False)` | Key IDs, readable key names, and customer tags |
+| `get_usage_responses_by_plan_id` | `get_usage(usagePlanId=...)` | One usage response per plan ID |
+
+These section names organize the local fixture; they are not fields returned by
+AWS. Inside each response, AWS names such as `id`, `name`, `usagePlanId`, `startDate`,
+`endDate`, and `items` are preserved. Daily usage remains `[used, remaining]`, exactly
+as the SDK returns it. The handler calls the same SDK methods in sample and AWS runs;
+the local runner substitutes their responses and the upload destination only.
+
+All sample customers use one shared plan, `API Usage - Monthly Metering`, with no
+Basic/Premium tiers. API key names identify their owner and environment, such as
+`acme-production-api-key`.
+Sample IDs are fictional placeholders for AWS-generated identifiers. Match by ID,
+not by interpreting a display name; customer IDs stay stable even if names change.
+Customer identity is stored in the API key tags, just as it will be
+retrieved from API Gateway. No separate customer lookup file is needed.
+
+After installing the dependencies described below, run:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/run_sample_report.py
+```
+
+The runner invokes the actual `lambda_handler`. Botocore Stubber supplies and
+validates the API responses, and a local sink writes the exact bytes that the
+handler would upload to S3. It uses dummy credentials and makes no AWS calls.
+The production handler still obtains real AWS clients outside this local runner.
+
+It produces one monthly CSV and one monthly JSON, with no daily report files:
+
+```text
+output/sample-reports/reports/2026-10/usage.csv
+output/sample-reports/reports/2026-10/usage.json
+```
+
+| Customer ID | Customer name | Plan | Daily requests | October requests |
+| --- | --- | --- | ---: | ---: |
+| cust-001 | Acme Ltd | API Usage - Monthly Metering | 10 | 310 |
+| cust-002 | Northwind Ltd | API Usage - Monthly Metering | 20 | 620 |
+| cust-003 | Contoso Ltd | API Usage - Monthly Metering | 30 | 930 |
+| **Total** | | | **60** | **1,860** |
+
+The fixture contains all 31 days. Every key has the same illustrative 10,000-request
+monthly operational quota; it does not represent free usage or a pricing tier.
+Remaining quotas decrease independently for each key; only used requests are summed.
+The intended billing model is monthly usage per customer, with pricing and billable
+request rules to be defined later. JSON retains daily details inside the
+monthly report for verification. The runner expects this single-page scenario;
+pagination remains covered by the existing unit tests. No prices or billing rules
+are applied yet. Generated reports are excluded from Git and are plain local files;
+the S3 encryption upload parameter is checked, but does not encrypt local files.
+
+## Local Streamlit frontend
+
+The separate [`frontend/`](frontend/README.md) folder contains a customer usage UI.
+Select a customer and a start/end date within the sample period, then generate a
+report with totals, a per-key breakdown, a daily chart, and CSV/JSON downloads.
+It reuses the local Lambda sample runner and makes no AWS calls.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r frontend/requirements.txt
+cd frontend
+..\.venv\Scripts\python.exe -m streamlit run app.py
+```
+
+Open **http://localhost:8501**. The sample currently covers October 2026.
+The frontend filters the monthly report into the selected dates; the deployed
+Lambda's monthly interface is unchanged. This local test UI is excluded from the
+Lambda deployment package. See the frontend README for tests and deployment boundaries.
+
 ## Dependencies and software versions
 
 Record dependency changes in these files before installing them:
@@ -76,9 +158,10 @@ Record dependency changes in these files before installing them:
 | --- | --- |
 | `requirements.txt` | Exact local AWS SDK versions, including transitive dependencies |
 | `requirements-dev.txt` | Shared requirements plus the pinned CloudFormation validator |
+| `frontend/requirements.txt` | Streamlit and pinned frontend dependencies, included in development installs |
 | `package.json` / `package-lock.json` | Serverless npm launcher and locked dependency tree |
-| `serverless.yml` | Framework engine 4.46.0 and Lambda runtime Python 3.13 |
-| `.python-version` | Python 3.13 for local version managers |
+| `serverless.yml` | Framework engine 4.46.0 and Lambda runtime Python 3.15 (AWS preview) |
+| `.python-version` | Python 3.15 for local version managers and CI |
 | `.nvmrc` | Node.js 22.23.4 for local version managers |
 
 Python and Node.js must be installed separately; requirements files install Python
@@ -98,7 +181,12 @@ Lambda would be needed to enforce those same SDK versions in AWS.
 
 ## Test locally
 
-Python 3.13 is the deployment runtime. Install Boto3 locally for the module's AWS
+Python 3.15 is the configured runtime and matches the installed local interpreter.
+GitHub Actions reads this version from `.python-version`. AWS currently lists
+Python 3.15 as a preview runtime, without production SLA or Technical Support;
+confirm general availability before a production deployment. See the
+[AWS runtime list](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html).
+Install Boto3 locally for the module's AWS
 SDK imports. Tests use mocked AWS clients; they do not need credentials or contact AWS:
 
 ```powershell

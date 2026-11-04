@@ -42,6 +42,7 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            frontend/requirements.txt
 
       # Install the Node version recorded for this project and cache npm downloads.
       - name: Set up Node.js
@@ -65,6 +66,10 @@ jobs:
       # AWS clients are mocked, so these tests need no cloud credentials.
       - name: Run Lambda unit tests
         run: python -m unittest discover -s tests -v
+
+      # Exercise customer/date filtering and the Streamlit form without AWS credentials.
+      - name: Run frontend service and UI tests
+        run: python -m unittest discover -s frontend/tests -v
 
       # Syntax checks run even when authenticated Serverless packaging is not configured.
       - name: Validate YAML syntax
@@ -134,6 +139,7 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            frontend/requirements.txt
 
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38

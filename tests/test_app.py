@@ -87,6 +87,14 @@ class ReportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.collect({"missing"})
 
+    def test_missing_customer_id_is_unmapped(self):
+        """Input: a key name with no customer ID tag. Expect unmapped, with no inferred ID."""
+        self.api.get_api_keys.return_value["items"][0]["tags"] = {"customer_name": "Acme Ltd"}
+        row = self.collect()["usage"][0]
+        self.assertEqual(row["customer_id"], "")
+        self.assertEqual(row["customer_name"], "Acme Ltd")
+        self.assertEqual(row["customer_mapping_status"], "unmapped")
+
     def test_plan_filter(self):
         """Input: two plans but only p1 selected. Expect usage fetched for one plan."""
         self.api.get_usage_plans.return_value["items"].append({"id": "p2"})

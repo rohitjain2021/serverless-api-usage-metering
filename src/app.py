@@ -47,7 +47,8 @@ MONTH_PATTERN = re.compile(r"\d{4}-\d{2}")
 # Escape these in user-supplied names.
 CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
 # Ordered CSV columns; detailed daily records appear only in the JSON report.
-FIELDS = ("month", "usage_plan_id", "usage_plan_name", "api_key_id", "api_key_name", "requests_used")
+FIELDS = ("month", "customer_id", "customer_name", "customer_mapping_status",
+          "usage_plan_id", "usage_plan_name", "api_key_id", "api_key_name", "requests_used")
 # Apply the same retry and timeout settings to both AWS clients.
 AWS_CONFIG = Config(
     retries={"mode": "standard", "total_max_attempts": 8},
@@ -135,7 +136,8 @@ def collect_report(api, start, end, plan_ids=()):
     Returns:
         dict: Schema version, month, inclusive dates, plan/row counts, total used
         requests, and a ``usage`` list with one row per returned key/plan pair.
-        Each row includes names, IDs, its request total, and dated daily records.
+        Each row includes customer tags, names, IDs, its request total, and dated daily records.
+        Missing customer_id tags produce an explicit unmapped status, never a guessed owner.
         Missing key metadata produces an empty name; no results produce zero totals.
 
     Raises:
@@ -150,8 +152,9 @@ def collect_report(api, start, end, plan_ids=()):
         if missing:
             raise ValueError("Configured usage plans were not found: " + ", ".join(sorted(missing)))
         plans = [plan for plan in plans if plan["id"] in plan_ids]
-    # Build a name lookup using key IDs. Secret API key values are not requested.
-    keys = {key["id"]: key.get("name", "")
+    # Retain key metadata so usage can be joined to customer tags by API key ID.
+    # Secret API key values are not requested.
+    keys = {key["id"]: key
             for page in pages(api.get_api_keys, includeValues=False)
             for key in page.get("items", [])}
     rows = []
@@ -172,26 +175,34 @@ def collect_report(api, start, end, plan_ids=()):
                        or pair[0] < 0 for pair in daily):
                     raise ValueError("Invalid daily usage data")
                 # API Gateway's daily entries are ordered from the requested start date.
+                # Customer IDs and names are conventions stored on API key tags.
+                metadata = keys.get(key_id, {})
+                tags = metadata.get("tags") or {}
+                customer_id = tags.get("customer_id", "").strip()
+                customer_name = tags.get("customer_name", "").strip()
                 rows.append({"month": start.strftime(MONTH_FORMAT),
+                             "customer_id": customer_id, "customer_name": customer_name,
+                             "customer_mapping_status": "mapped" if customer_id else "unmapped",
                              "usage_plan_id": plan["id"], "usage_plan_name": plan.get("name", ""),
-                             "api_key_id": key_id, "api_key_name": keys.get(key_id, ""),
+                             "api_key_id": key_id, "api_key_name": metadata.get("name", ""),
                              "requests_used": sum(pair[0] for pair in daily),
                              "daily_usage": [{"date": (start + timedelta(days=index)).isoformat(),
                                               "requests_used": pair[0], "quota_remaining": pair[1]}
                                              for index, pair in enumerate(daily)]})
     # Stable ordering makes repeated reports easy to compare across runs.
     rows.sort(key=lambda row: (row["usage_plan_id"], row["api_key_id"]))
-    return {"schema_version": 1, "month": start.strftime(MONTH_FORMAT),
+    return {"schema_version": 2, "month": start.strftime(MONTH_FORMAT),
             "start_date": start.isoformat(), "end_date": end.isoformat(),
             "usage_plan_count": len(plans), "api_key_plan_count": len(rows),
             "total_requests": sum(row["requests_used"] for row in rows), "usage": rows}
 
 
-def csv_report(report):
+def csv_report(report, fields=FIELDS):
     """Convert the report's summary rows into an in-memory CSV payload.
 
     Args:
         report (dict): collect_report output containing a ``usage`` list.
+        fields (tuple[str]): Ordered output columns; defaults to the monthly schema.
 
     Returns:
         bytes: UTF-8 CSV with FIELDS as its header, even for an empty report.
@@ -199,7 +210,7 @@ def csv_report(report):
         apostrophe so spreadsheet software treats them as text.
     """
     output = io.StringIO(newline="")
-    writer = csv.DictWriter(output, fieldnames=FIELDS, extrasaction="ignore")
+    writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
     for row in report["usage"]:
         # Names are user-controlled; prevent spreadsheet formula execution.

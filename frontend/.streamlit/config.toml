@@ -1,0 +1,17 @@
+# Apply this theme when starting Streamlit from the frontend directory.
+[theme]
+base = "light"
+primaryColor = "#137c70"
+backgroundColor = "#f7f9fb"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#182936"
+font = "sans-serif"
+
+# Keep local test sessions on this machine until deployment is explicitly configured.
+[server]
+address = "127.0.0.1"
+headless = true
+
+# Disable optional usage-statistics collection for the local development UI.
+[browser]
+gatherUsageStats = false

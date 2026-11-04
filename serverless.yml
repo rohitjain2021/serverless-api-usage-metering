@@ -10,7 +10,8 @@ configValidationMode: error
 provider:
   # Defaults for the Lambda and deployment. Each stage has its own AWS stack.
   name: aws
-  runtime: python3.13
+  # Match local Python and CI; AWS currently classifies Python 3.15 as preview.
+  runtime: python3.15
   region: ${opt:region, 'us-east-1'}
   stage: ${opt:stage, 'dev'}
   # Maximum execution time in seconds.
