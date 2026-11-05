@@ -70,10 +70,11 @@ they do not need AWS credentials.
 
 `infrastructure/frontend-data-access.yml` is imported by `serverless.yml`. The stack
 outputs `FrontendHistoryBucket`, `FrontendHistoryPrefix`, `FrontendHistoryManifestKey`,
-and `FrontendHistoryReadPolicyArn`. The managed policy grants only `s3:GetObject`
-inside the synthetic dataset prefix. It is not automatically attached to a user or
-role; attach it to the dedicated identity used by the hosted frontend. No access keys
-or public bucket access are created by the template.
+`FrontendHistoryReadPolicyArn`, `FrontendHistoryServiceUserName`, and
+`FrontendHistoryServiceUserArn`. The managed policy grants only `s3:GetObject`
+inside the synthetic dataset prefix. The template attaches it to a dedicated
+service user and uses the same policy as the user's permissions boundary.
+No console password, access keys, or public bucket access are created by the template.
 
 The reader gets customers and calendar bounds from the dataset manifest, then reads
 only the selected dates. It verifies SHA-256 hashes, day/customer completeness,
@@ -93,7 +94,8 @@ bucket = "YOUR_FRONTEND_HISTORY_BUCKET_OUTPUT"
 prefix = "usage/demo/dataset=historical-2026-08_2026-10-v1"
 ```
 
-Use the existing local AWS profile/environment for credentials. Alternatively, set
+For local AWS profile/environment credentials, omit the example's `[aws]` section.
+Alternatively, set
 `USAGE_DATA_SOURCE=s3`, `USAGE_S3_BUCKET`, `USAGE_S3_PREFIX`, and `AWS_DEFAULT_REGION`
 in the process environment. These override the non-secret `[usage]` values. The UI
 defaults to local mode if no source is configured; selecting S3 never silently
@@ -109,9 +111,10 @@ secret_access_key = "ENTER_IN_STREAMLIT_SECRETS_ONLY"
 # Add session_token here only when using temporary credentials.
 ```
 
-The hosted app cannot reuse a local AWS sign-in. Configure its identity through your
-AWS access-management process and attach `FrontendHistoryReadPolicyArn`; do not use
-an administrator identity for hosting. Never commit keys or paste them into chat.
+The hosted app cannot reuse a local AWS sign-in. Generate credentials separately
+for `FrontendHistoryServiceUserName` after deployment; keep secret values out of
+CloudFormation templates and outputs. When removing the stack, delete the user's
+separately created access keys first. Never commit keys or paste them into chat.
 Actual `.streamlit/secrets.toml` files are excluded by `.gitignore`.
 
 The S3 source deliberately accepts only explicitly synthetic demo datasets. The

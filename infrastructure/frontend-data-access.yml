@@ -1,7 +1,7 @@
 # Define read-only frontend access to the synthetic dataset in the existing reports bucket.
 # Inputs: ReportsBucket and the shared demoHistoryPrefix setting in serverless.yml.
-# Outputs: non-secret connection settings and an attachable IAM managed policy ARN.
-# No IAM user, access key, or public bucket permission is created by this template.
+# Outputs: non-secret connection settings, the service user, and its managed policy ARN.
+# Generate access keys separately so credentials never enter templates or stack outputs.
 Resources:
   FrontendHistoryReadPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -15,6 +15,24 @@ Resources:
             Resource:
               Fn::Sub: '${ReportsBucket.Arn}/${self:custom.demoHistoryPrefix}/*'
 
+  # Give the hosted frontend its own programmatic identity, without a console password.
+  # Include stage and region because IAM user names are unique across the AWS account.
+  FrontendHistoryServiceUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: service-account-serverless-api-usage-${sls:stage}-${aws:region}
+      Path: /service-accounts/
+      ManagedPolicyArns:
+        - Ref: FrontendHistoryReadPolicy
+      # Also cap identity-policy permissions at the same dataset-only read access.
+      PermissionsBoundary:
+        Ref: FrontendHistoryReadPolicy
+      Tags:
+        - Key: Application
+          Value: serverless-api-usage-metering
+        - Key: Purpose
+          Value: Streamlit synthetic history reader
+
 Outputs:
   FrontendHistoryBucket:
     Value:
@@ -24,6 +42,12 @@ Outputs:
   FrontendHistoryManifestKey:
     Value: ${self:custom.demoHistoryPrefix}/manifest.json
   FrontendHistoryReadPolicyArn:
-    Description: Attach to the dedicated identity used by Streamlit; no write/list/API permissions
+    Description: Attached to the Streamlit service user; no write/list/API permissions
     Value:
       Ref: FrontendHistoryReadPolicy
+  FrontendHistoryServiceUserName:
+    Value:
+      Ref: FrontendHistoryServiceUser
+  FrontendHistoryServiceUserArn:
+    Value:
+      Fn::GetAtt: [FrontendHistoryServiceUser, Arn]

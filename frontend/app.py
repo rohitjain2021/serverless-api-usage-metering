@@ -120,8 +120,12 @@ def main():
     except (OSError, ValueError, KeyError, BotoCoreError, ClientError) as error:
         st.error(f"Unable to load usage data: {error}")
         return
-    st.info(f"{source['label']} · Available {source['start_date']:%d %b %Y} – "
-            f"{source['end_date']:%d %b %Y}. Reports use inclusive UTC dates.")
+    # Derive testing dates from the selected dataset so the banner stays accurate as coverage changes.
+    st.info(f"**Test data available: {source['start_date']:%d %B %Y} to "
+            f"{source['end_date']:%d %B %Y} (inclusive UTC dates).**\n\n"
+            "Select a customer and dates within this period, then click **Generate report**. "
+            "This demo uses synthetic usage data for testing. "
+            f"Source: {source['label']}.")
     with st.form("report_filters"):
         customer_column, start_column, end_column = st.columns([2, 1, 1])
         customer = customer_column.selectbox(
