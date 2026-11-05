@@ -2,9 +2,10 @@
 
 **Live demo:** [Try the API Usage Metering dashboard](https://serverless-api-usage-metering.streamlit.app/)
 
-Select a sample customer and dates within **October 2026** to test report generation.
+Select a sample customer and dates within **August–October 2026** in S3 demo mode
+to test report generation. Local sample mode covers **October 2026**.
 The frontend supports a local sample or S3 synthetic history. The hosted app requires
-its S3 connection settings and dedicated read-only credentials in Streamlit Secrets;
+its S3 connection settings and dedicated service-account credentials in Streamlit Secrets;
 deploying AWS infrastructure alone does not configure those hosted settings.
 
 An AWS-native API usage accounting framework for transparent, traceable, and reliable usage-based billing.
@@ -30,15 +31,25 @@ The framework provides more accurate and explainable usage reporting, long-term 
 The current implementation exports API Gateway's aggregated usage measurements to
 monthly CSV and JSON reports in S3. Request-level activity ingestion, configurable
 billing policies, and reconciliation are planned capabilities and are not yet
-implemented. The architecture below describes the current reporting component.
+implemented. The architecture below describes monthly reporting, the S3-backed
+Streamlit demo, and SNS download notifications.
 
 ## Architecture
 
-![AWS monthly usage reporting workflow: EventBridge Scheduler triggers Lambda to retrieve API Gateway usage data and store monthly CSV or JSON reports in an encrypted S3 bucket.](docs/images/aws-monthly-usage-reporting-workflow.png)
+![Current architecture: scheduled Lambda reports from API Gateway to S3, Streamlit reads synthetic S3 history and publishes download requests to SNS email, and CloudWatch receives Lambda logs and metrics.](docs/images/aws-api-usage-metering-architecture.png)
 
 The Lambda implementation follows this diagram: EventBridge Scheduler runs it at
 06:00 UTC on the first day of each month. It reports the previous complete UTC
 calendar month for API Gateway REST API usage plans in the deployment region.
+
+Streamlit reads the separate synthetic-history prefix directly from the same S3
+bucket, generates customer/date-range reports, and publishes download-click events
+to SNS for operator email notifications. Its IAM service user can read only the
+demo-history objects and publish only to that topic. CloudWatch stores Lambda logs
+and provides standard metrics; custom alarms are not configured.
+
+See [the editable architecture and flow details](docs/architecture.md) for the
+distinction between measured usage, synthetic demo history, and download alerts.
 
 ## Lambda function
 
