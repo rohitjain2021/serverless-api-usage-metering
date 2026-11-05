@@ -6,3 +6,5 @@ node_modules/
 response.json
 output/sample-reports/
 output/live-demo/
+output/synthetic-history/
+**/.streamlit/secrets.toml

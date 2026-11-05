@@ -79,7 +79,8 @@ jobs:
           import yaml
 
           # Parse each source file and fail immediately on malformed YAML.
-          for filename in ('serverless.yml', 'infrastructure/demo-api.yml', '.github/workflows/ci.yml'):
+          for filename in ('serverless.yml', 'infrastructure/demo-api.yml',
+                           'infrastructure/frontend-data-access.yml', '.github/workflows/ci.yml'):
               yaml.safe_load(Path(filename).read_text(encoding='utf-8'))
               print(f'Valid YAML: {filename}')
           PY

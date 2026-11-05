@@ -1,0 +1,29 @@
+# Define read-only frontend access to the synthetic dataset in the existing reports bucket.
+# Inputs: ReportsBucket and the shared demoHistoryPrefix setting in serverless.yml.
+# Outputs: non-secret connection settings and an attachable IAM managed policy ARN.
+# No IAM user, access key, or public bucket permission is created by this template.
+Resources:
+  FrontendHistoryReadPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Read only the API metering synthetic S3 history dataset for the frontend
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: s3:GetObject
+            Resource:
+              Fn::Sub: '${ReportsBucket.Arn}/${self:custom.demoHistoryPrefix}/*'
+
+Outputs:
+  FrontendHistoryBucket:
+    Value:
+      Ref: ReportsBucket
+  FrontendHistoryPrefix:
+    Value: ${self:custom.demoHistoryPrefix}
+  FrontendHistoryManifestKey:
+    Value: ${self:custom.demoHistoryPrefix}/manifest.json
+  FrontendHistoryReadPolicyArn:
+    Description: Attach to the dedicated identity used by Streamlit; no write/list/API permissions
+    Value:
+      Ref: FrontendHistoryReadPolicy

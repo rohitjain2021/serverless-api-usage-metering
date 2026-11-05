@@ -3,8 +3,9 @@
 **Live demo:** [Try the API Usage Metering dashboard](https://serverless-api-usage-metering.streamlit.app/)
 
 Select a sample customer and dates within **October 2026** to test report generation.
-The Streamlit frontend currently uses sample data; deploying the AWS demo below does
-not automatically switch the hosted frontend to live AWS data.
+The frontend supports a local sample or S3 synthetic history. The hosted app requires
+its S3 connection settings and dedicated read-only credentials in Streamlit Secrets;
+deploying AWS infrastructure alone does not configure those hosted settings.
 
 An AWS-native API usage accounting framework for transparent, traceable, and reliable usage-based billing.
 
@@ -275,12 +276,61 @@ a new deployment. Remove a demo stack with `serverless remove --stage dev --regi
 when it is no longer needed. The reports bucket is retained by design and must be
 managed separately if you want to stop retaining its reports and object versions.
 
+## Three-month synthetic history in S3
+
+`scripts/seed_s3_demo_history.py` builds historical demo records for **August 1 through
+October 31, 2026**. It uses the existing stack's private reports bucket and current
+customer/key/plan metadata, while explicitly marking every usage record as synthetic.
+It does not add historical traffic to API Gateway or alter its usage counters.
+
+```text
+usage/demo/dataset=historical-2026-08_2026-10-v1/
+  manifest.json
+  date=2026-08-01/usage.json
+  date=2026-08-02/usage.json
+  ...
+  date=2026-10-31/usage.json
+```
+
+There are **92 daily JSON files**, each containing all three customers, plus one
+manifest. Daily records include the UTC date, customer ID/name, API key ID/name,
+usage plan ID/name, requests used, monthly quota/remaining snapshot, a unique record
+ID, synthetic-source flags, and `billing_status: not_calculated`. No secret API key
+values or prices are included. The normalized daily format is designed for customer
+and date filtering; it is not a raw Boto3 response or evidence of actual historical calls.
+
+The data varies by weekday and month, includes explicit zero-usage days, and contains
+one labeled synthetic spike for later analysis tests. Monthly quota snapshots reset
+on the first day of each month. A zero record means zero test usage; a missing date
+must be treated as incomplete coverage, not zero.
+
+The manifest lists all dates, object keys and SHA-256 hashes, expected customer/month
+totals, and the total record count. It is uploaded last, after all daily files are
+read back and verified. Existing identical objects are reused; differing objects are
+never overwritten. All S3 objects use AES256 encryption and synthetic-data metadata.
+
+```powershell
+# Generate local copies using the deployed demo identities; no S3 writes.
+.\.venv\Scripts\python.exe scripts/seed_s3_demo_history.py
+
+# Generate, upload, and verify the 92 daily files and manifest in the existing bucket.
+.\.venv\Scripts\python.exe scripts/seed_s3_demo_history.py --upload
+```
+
+Local copies live under `output/synthetic-history/` and are excluded from Git.
+No new bucket or permissions are provisioned; the existing Serverless-managed bucket
+is reused. This dataset stays separate from `reports/` and real measurements. The
+Streamlit frontend can read this dataset using the **S3 demo history** source and
+the connection settings in [`frontend/README.md`](frontend/README.md). No AI/RAG call
+or billing calculation is performed during seeding or report generation.
+
 ## Local Streamlit frontend
 
 The separate [`frontend/`](frontend/README.md) folder contains a customer usage UI.
 Select a customer and a start/end date within the sample period, then generate a
 report with totals, a per-key breakdown, a daily chart, and CSV/JSON downloads.
-It reuses the local Lambda sample runner and makes no AWS calls.
+Local mode reuses the sample Lambda runner. S3 mode connects directly to the private
+historical dataset using the Serverless-defined read-only policy and stack outputs.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r frontend/requirements.txt
@@ -288,10 +338,9 @@ cd frontend
 ..\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-Open **http://localhost:8501**. The sample currently covers October 2026.
-The frontend filters the monthly report into the selected dates; the deployed
-Lambda's monthly interface is unchanged. This local test UI is excluded from the
-Lambda deployment package. See the frontend README for tests and deployment boundaries.
+Open **http://localhost:8501**. The local sample covers October 2026; S3 history
+covers August–October 2026, including cross-month date selections. The UI is excluded
+from the Lambda ZIP. See the frontend README for connection setup, tests, and boundaries.
 
 ## Dependencies and software versions
 

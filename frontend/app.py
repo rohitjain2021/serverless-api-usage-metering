@@ -1,6 +1,6 @@
 """Streamlit customer usage explorer.
 
-Input: customer dropdown and inclusive date selections within the local fixture.
+Input: customer/date selections over the local fixture or configured S3 demo history.
 Output: a report preview, usage chart, and CSV/JSON downloads on Generate report.
 Launch from the repository root with: python -m streamlit run frontend/app.py
 """
@@ -10,6 +10,9 @@ from pathlib import Path
 import sys
 # Render the frontend using the dependency pinned in frontend/requirements.txt.
 import streamlit as st
+# Display configuration and AWS connection failures without exposing credential values.
+from botocore.exceptions import BotoCoreError, ClientError
+from streamlit.errors import StreamlitSecretNotFoundError
 
 # Keep all shared paths and styling before the rendering functions.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +30,14 @@ div[data-testid="stForm"] { background: white; border-radius: 14px; }
 # Import the report boundary after making the repository packages available.
 sys.path.insert(0, str(PROJECT_ROOT))
 from frontend.report_service import available_source, downloads, generate_customer_report
+from frontend.connection import connection_settings, s3_client
+from frontend.s3_source import S3HistorySource
+
+
+def clear_source_state():
+    """Input: current Streamlit session. Clear old filters/report on source changes; return None."""
+    for key in ("customer_id", "start_date", "end_date", "usage_report"):
+        st.session_state.pop(key, None)
 
 
 def render_report(report):
@@ -39,7 +50,7 @@ def render_report(report):
     st.caption(f"{report['customer_id']}  ·  {report['start_date']} to {report['end_date']}  ·  UTC dates")
     requests, keys, days = st.columns(3)
     requests.metric("API requests", f"{report['total_requests']:,}")
-    keys.metric("API keys used", report["api_key_count"])
+    keys.metric("API keys in report", report["api_key_count"])
     days.metric("Days selected", report["days_selected"])
     st.write("")
     # Retain per-key detail so several keys belonging to one customer remain traceable.
@@ -68,14 +79,18 @@ def render_report(report):
     json_column.download_button("Download JSON", data=json_bytes, file_name=filename + ".json",
                                 mime="application/json", width="stretch", key="download_json")
     st.caption("Usage counts only. Pricing and billing calculations have not been applied.")
+    if report.get("source") == "s3_synthetic_history":
+        st.caption(f"Synthetic test dataset: {report['dataset_id']} · "
+                   f"{len(report['source_objects'])} verified daily source files from S3")
 
 
 def main():
     """Render the selection form and generate a report only when explicitly submitted.
 
-    Inputs: Streamlit widget/session state and the local sample file.
+    Inputs: widget/session state, optional Secrets, and the selected source.
     Outputs: rendered controls and report, with validation errors shown in the page.
-    No AWS credentials, deployment, S3 writes, or RAG service is used by this UI.
+    S3 mode uses configured AWS credentials for read-only access. No deployment,
+    S3 writes, real billing, or RAG service is performed by this UI.
     """
     st.set_page_config(page_title="API Usage | Customer Reports", page_icon="📊", layout="wide")
     st.markdown(PAGE_STYLE, unsafe_allow_html=True)
@@ -83,11 +98,29 @@ def main():
     st.title("Your API usage, clearly counted.")
     st.write("Choose a customer and reporting period to explore their API requests.")
     try:
-        source = available_source()
-    except (OSError, ValueError, KeyError) as error:
-        st.error(f"Unable to load local usage data: {error}")
+        try:
+            secrets = st.secrets.to_dict()
+        except StreamlitSecretNotFoundError:
+            secrets = {}
+        settings = connection_settings(secrets)
+        st.sidebar.caption("DEMO WORKSPACE")
+        selected_source = st.sidebar.radio("Usage source", ["Local sample", "S3 demo history"],
+                                          index=1 if settings["source"] == "s3" else 0,
+                                          key="usage_source", on_change=clear_source_state)
+        reader = None
+        if selected_source == "S3 demo history":
+            if not settings["bucket"] or not settings["prefix"]:
+                st.error("Configure the S3 bucket and prefix in Streamlit Secrets or environment settings. "
+                         "See frontend/README.md for the connection settings.")
+                return
+            reader = S3HistorySource(s3_client(settings), settings["bucket"], settings["prefix"])
+            source = reader.available_source()
+        else:
+            source = {**available_source(), "label": "Local sample data"}
+    except (OSError, ValueError, KeyError, BotoCoreError, ClientError) as error:
+        st.error(f"Unable to load usage data: {error}")
         return
-    st.info(f"Local sample data · Available {source['start_date']:%d %b %Y} – "
+    st.info(f"{source['label']} · Available {source['start_date']:%d %b %Y} – "
             f"{source['end_date']:%d %b %Y}. Reports use inclusive UTC dates.")
     with st.form("report_filters"):
         customer_column, start_column, end_column = st.columns([2, 1, 1])
@@ -106,8 +139,9 @@ def main():
         st.session_state.pop("usage_report", None)
         try:
             with st.spinner("Generating your usage report…"):
-                st.session_state["usage_report"] = generate_customer_report(customer, start, end)
-        except (ValueError, OSError, KeyError) as error:
+                st.session_state["usage_report"] = (reader.generate_report(customer, start, end) if reader else
+                                                     generate_customer_report(customer, start, end))
+        except (ValueError, OSError, KeyError, BotoCoreError, ClientError) as error:
             st.error(str(error))
     if "usage_report" in st.session_state:
         render_report(st.session_state["usage_report"])

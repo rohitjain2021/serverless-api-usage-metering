@@ -8,6 +8,8 @@ frameworkVersion: '4.46.0'
 configValidationMode: error
 
 custom:
+  # Match the seeded history dataset; the frontend reads only this prefix.
+  demoHistoryPrefix: usage/demo/dataset=historical-2026-08_2026-10-v1
   # Report only this stack's demo plan by default, instead of unrelated regional usage plans.
   # A --param usagePlanIds value still overrides the default for existing API integrations.
   defaultUsagePlanId:
@@ -74,6 +76,7 @@ functions:
 
 resources:
   - ${file(infrastructure/demo-api.yml)}
+  - ${file(infrastructure/frontend-data-access.yml)}
     # Additional CloudFormation resources deployed alongside the function.
   - Resources:
       ReportsBucket:
