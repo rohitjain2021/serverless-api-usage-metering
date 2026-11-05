@@ -8,6 +8,7 @@ Launch from the repository root with: python -m streamlit run frontend/app.py
 # Bootstrap project imports regardless of the Streamlit working directory.
 from pathlib import Path
 import sys
+import logging
 # Render the frontend using the dependency pinned in frontend/requirements.txt.
 import streamlit as st
 # Display configuration and AWS connection failures without exposing credential values.
@@ -16,6 +17,7 @@ from streamlit.errors import StreamlitSecretNotFoundError
 
 # Keep all shared paths and styling before the rendering functions.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+LOGGER = logging.getLogger(__name__)
 PAGE_STYLE = """
 <style>
 .stApp { background: #f7f9fb; }
@@ -30,14 +32,40 @@ div[data-testid="stForm"] { background: white; border-radius: 14px; }
 # Import the report boundary after making the repository packages available.
 sys.path.insert(0, str(PROJECT_ROOT))
 from frontend.report_service import available_source, downloads, generate_customer_report
-from frontend.connection import connection_settings, s3_client
+from frontend.connection import aws_client, connection_settings, s3_client
+from frontend.notifications import publish_download_request
 from frontend.s3_source import S3HistorySource
 
 
 def clear_source_state():
     """Input: current Streamlit session. Clear old filters/report on source changes; return None."""
-    for key in ("customer_id", "start_date", "end_date", "usage_report"):
+    for key in ("customer_id", "start_date", "end_date", "usage_report", "download_notification_warning"):
         st.session_state.pop(key, None)
+
+
+def notify_download(report, file_format):
+    """Inputs: the displayed report and clicked format. Publish once per callback; return None.
+
+    Read settings at click time and store a safe warning if publishing fails.
+    Downloading remains available even when SNS is unavailable. Rerendering a report
+    does not call this function, and successful publishing does not verify file saving.
+    """
+    try:
+        try:
+            secrets = st.secrets.to_dict()
+        except StreamlitSecretNotFoundError:
+            secrets = {}
+        settings = connection_settings(secrets)
+        if not settings["download_topic_arn"]:
+            raise ValueError("Download notifications are not configured")
+        publish_download_request(report, file_format, settings["download_topic_arn"],
+                                 aws_client("sns", settings))
+        st.session_state.pop("download_notification_warning", None)
+    except (OSError, ValueError, KeyError, BotoCoreError, ClientError) as error:
+        # Log only the error class; credentials and service response bodies stay private.
+        LOGGER.warning("Report-download notification failed (%s)", type(error).__name__)
+        st.session_state["download_notification_warning"] = (
+            "Your download was requested, but its notification could not be sent.")
 
 
 def render_report(report):
@@ -73,11 +101,16 @@ def render_report(report):
     csv_bytes, json_bytes = downloads(report)
     filename = f"api-usage_{report['customer_id']}_{report['start_date']}_{report['end_date']}"
     st.subheader("Download report")
+    if "download_notification_warning" in st.session_state:
+        st.warning(st.session_state["download_notification_warning"])
     csv_column, json_column, spacer = st.columns([1, 1, 2])
     csv_column.download_button("Download CSV", data=csv_bytes, file_name=filename + ".csv",
-                               mime="text/csv", width="stretch", key="download_csv")
+                               mime="text/csv", width="stretch", key="download_csv",
+                               on_click=notify_download, args=(report, "csv"))
     json_column.download_button("Download JSON", data=json_bytes, file_name=filename + ".json",
-                                mime="application/json", width="stretch", key="download_json")
+                                mime="application/json", width="stretch", key="download_json",
+                                on_click=notify_download, args=(report, "json"))
+    st.caption("Download requests notify the demo operator when notifications are configured.")
     st.caption("Usage counts only. Pricing and billing calculations have not been applied.")
     if report.get("source") == "s3_synthetic_history":
         st.caption(f"Synthetic test dataset: {report['dataset_id']} · "
@@ -90,7 +123,8 @@ def main():
     Inputs: widget/session state, optional Secrets, and the selected source.
     Outputs: rendered controls and report, with validation errors shown in the page.
     S3 mode uses configured AWS credentials for read-only access. No deployment,
-    S3 writes, real billing, or RAG service is performed by this UI.
+    S3 writes, real billing, or RAG service is performed by this UI. Download clicks
+    publish report metadata to the configured SNS notification topic.
     """
     st.set_page_config(page_title="API Usage | Customer Reports", page_icon="📊", layout="wide")
     st.markdown(PAGE_STYLE, unsafe_allow_html=True)
@@ -141,6 +175,7 @@ def main():
     if submitted:
         # Clear previous results before validation so an invalid request cannot show stale downloads.
         st.session_state.pop("usage_report", None)
+        st.session_state.pop("download_notification_warning", None)
         try:
             with st.spinner("Generating your usage report…"):
                 st.session_state["usage_report"] = (reader.generate_report(customer, start, end) if reader else

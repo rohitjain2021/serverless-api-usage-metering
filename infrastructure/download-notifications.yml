@@ -1,0 +1,37 @@
+# Notify configured subscribers when the Streamlit CSV/JSON download buttons are clicked.
+# Input: optional --param downloadNotificationEmail=address; repeat it on future deployments.
+# Output: topic ARN for Streamlit Secrets. Email recipients must confirm their subscription.
+Parameters:
+  ReportDownloadNotificationEmail:
+    Type: String
+    Description: Optional operator email for report-download notifications
+    Default: ${param:downloadNotificationEmail, ''}
+
+Conditions:
+  HasDownloadNotificationEmail:
+    Fn::Not:
+      - Fn::Equals:
+          - Ref: ReportDownloadNotificationEmail
+          - ''
+
+Resources:
+  ReportDownloadTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: API usage report downloads
+
+  ReportDownloadEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasDownloadNotificationEmail
+    Properties:
+      Protocol: email
+      Endpoint:
+        Ref: ReportDownloadNotificationEmail
+      TopicArn:
+        Ref: ReportDownloadTopic
+
+Outputs:
+  ReportDownloadTopicArn:
+    Description: Set usage.download_topic_arn in Streamlit Secrets to enable click notifications
+    Value:
+      Ref: ReportDownloadTopic

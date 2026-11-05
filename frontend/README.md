@@ -71,8 +71,9 @@ they do not need AWS credentials.
 `infrastructure/frontend-data-access.yml` is imported by `serverless.yml`. The stack
 outputs `FrontendHistoryBucket`, `FrontendHistoryPrefix`, `FrontendHistoryManifestKey`,
 `FrontendHistoryReadPolicyArn`, `FrontendHistoryServiceUserName`, and
-`FrontendHistoryServiceUserArn`. The managed policy grants only `s3:GetObject`
-inside the synthetic dataset prefix. The template attaches it to a dedicated
+`FrontendHistoryServiceUserArn`. The managed policy grants `s3:GetObject`
+inside the synthetic dataset prefix and `sns:Publish` to the report-download topic only.
+The template attaches it to a dedicated
 service user and uses the same policy as the user's permissions boundary.
 No console password, access keys, or public bucket access are created by the template.
 
@@ -120,3 +121,34 @@ Actual `.streamlit/secrets.toml` files are excluded by `.gitignore`.
 The S3 source deliberately accepts only explicitly synthetic demo datasets. The
 customer dropdown is a filter, not authorization for private customer data. Add
 customer authentication and authorization before introducing real customer records.
+
+## Report-download email notifications
+
+`infrastructure/download-notifications.yml` provisions an SNS topic and an optional
+email subscription through Serverless. Deploy with an operator email address:
+
+```powershell
+npm run deploy -- --stage dev --region us-east-1 --param="downloadNotificationEmail=YOUR_EMAIL"
+```
+
+Repeat the email parameter on subsequent deployments so CloudFormation keeps the
+subscription. Omitting it disables the email subscription. The recipient must click
+**Confirm subscription** in the AWS SNS email before notifications can arrive.
+
+Copy the `ReportDownloadTopicArn` stack output into Streamlit Secrets under `[usage]`:
+
+```toml
+download_topic_arn = "YOUR_REPORT_DOWNLOAD_TOPIC_ARN"
+```
+
+Alternatively set `USAGE_DOWNLOAD_TOPIC_ARN`. The existing frontend identity publishes
+to this one topic; it cannot subscribe recipients, administer SNS, or write to S3.
+No additional Python dependencies or Lambda functions are required.
+
+Both CSV and JSON download clicks publish customer/report metadata and a UTC timestamp.
+Report generation and rerenders do not publish. The customer identifies the report;
+the requester is anonymous because this demo has no user authentication. Notifications
+describe download requests, not confirmed browser saves. No report body or credentials
+are included. SNS is a best-effort side effect: delivery can be duplicated or fail, and
+failures show a safe UI warning without blocking the download. This is not a durable
+download audit log. Standard SNS email is intended for internal operator alerts.

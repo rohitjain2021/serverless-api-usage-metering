@@ -26,6 +26,7 @@ def connection_settings(secrets=None):
             "bucket": os.environ.get("USAGE_S3_BUCKET", usage.get("bucket", "")),
             "prefix": os.environ.get("USAGE_S3_PREFIX", usage.get("prefix", "")),
             "region": os.environ.get("AWS_DEFAULT_REGION", usage.get("region", "us-east-1")),
+            "download_topic_arn": os.environ.get("USAGE_DOWNLOAD_TOPIC_ARN", usage.get("download_topic_arn", "")),
             "aws": secrets.get("aws", {})}
 
 
@@ -35,6 +36,15 @@ def s3_client(settings):
     Explicit access_key_id/secret_access_key must be supplied together. session_token
     is supported for temporary credentials. Missing credentials surface as SDK errors
     when reading S3. No access keys are created or persisted by this function.
+    """
+    return aws_client("s3", settings)
+
+
+def aws_client(service, settings):
+    """Inputs: AWS service name and connection settings. Return a client using the same frontend identity.
+
+    Explicit credentials must be supplied together; otherwise use the SDK credential chain.
+    Credential values are used only to authenticate and are never included in notifications.
     """
     aws = settings["aws"]
     key_id = aws.get("access_key_id")
@@ -46,4 +56,4 @@ def s3_client(settings):
         kwargs.update(aws_access_key_id=key_id, aws_secret_access_key=key_secret)
         if aws.get("session_token"):
             kwargs["aws_session_token"] = aws["session_token"]
-    return boto3.Session(**kwargs).client("s3", config=S3_CLIENT_CONFIG)
+    return boto3.Session(**kwargs).client(service, config=S3_CLIENT_CONFIG)

@@ -1,4 +1,4 @@
-# Define read-only frontend access to the synthetic dataset in the existing reports bucket.
+# Define dataset read access and download-notification publishing for the frontend.
 # Inputs: ReportsBucket and the shared demoHistoryPrefix setting in serverless.yml.
 # Outputs: non-secret connection settings, the service user, and its managed policy ARN.
 # Generate access keys separately so credentials never enter templates or stack outputs.
@@ -6,7 +6,7 @@ Resources:
   FrontendHistoryReadPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
-      Description: Read only the API metering synthetic S3 history dataset for the frontend
+      Description: Read synthetic S3 history and publish report-download events to one SNS topic
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -14,6 +14,11 @@ Resources:
             Action: s3:GetObject
             Resource:
               Fn::Sub: '${ReportsBucket.Arn}/${self:custom.demoHistoryPrefix}/*'
+          # Grant publishing to this stack's notification topic only.
+          - Effect: Allow
+            Action: sns:Publish
+            Resource:
+              Ref: ReportDownloadTopic
 
   # Give the hosted frontend its own programmatic identity, without a console password.
   # Include stage and region because IAM user names are unique across the AWS account.
@@ -24,7 +29,7 @@ Resources:
       Path: /service-accounts/
       ManagedPolicyArns:
         - Ref: FrontendHistoryReadPolicy
-      # Also cap identity-policy permissions at the same dataset-only read access.
+      # Cap identity-policy permissions at dataset reads and this topic's publishing access.
       PermissionsBoundary:
         Ref: FrontendHistoryReadPolicy
       Tags:
@@ -42,7 +47,7 @@ Outputs:
   FrontendHistoryManifestKey:
     Value: ${self:custom.demoHistoryPrefix}/manifest.json
   FrontendHistoryReadPolicyArn:
-    Description: Attached to the Streamlit service user; no write/list/API permissions
+    Description: Dataset reads and one SNS topic only; no S3 write/list or API Gateway permissions
     Value:
       Ref: FrontendHistoryReadPolicy
   FrontendHistoryServiceUserName:
